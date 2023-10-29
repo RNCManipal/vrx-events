@@ -61,9 +61,18 @@ config={ "gps_offset":0.85,
          "SK_Vy_kS":50,
 
          "SK_Wz_kP":2.0,
-         "SK_Wz_kI":0.3,
-         "SK_Wz_kD":1.8,
+        #  "SK_Wz_kI":0.3,
+        #  "SK_Wz_kD":1.8,
+        "SK_Wz_kI":0.005,
+         "SK_Wz_kD":6.0,
          "SK_Wz_kS":50,
+
+
+         "SK_Wz_kP_close":1.0,
+        
+        "SK_Wz_kI_close":0.005,
+         "SK_Wz_kD_close":8.0,
+
 
          "goal_tol":5.0,
          "v_const":5.7,
@@ -156,8 +165,9 @@ class StationKeeping(Node):
         self.cmd_vel_pub    = None
         self.dyn_reconf_srv = None
         
-        self.pos_tol = 0.2
-        self.rot_tol = 0.2
+        self.pos_tol = 0.20
+        self.rot_tol = 0.25
+        self.rot_tol_close = 0.10
 
         
         self.axis_mult = 8.8
@@ -316,6 +326,7 @@ class StationKeeping(Node):
         self.pid_sk_vx  = PIDController(config['SK_Vx_kP'], config['SK_Vx_kI'], config['SK_Vx_kD'], config['SK_Vx_kS']) # Station-keeping Vx PID controller
         self.pid_sk_vy  = PIDController(config['SK_Vy_kP'], config['SK_Vy_kI'], config['SK_Vy_kD'], config['SK_Vy_kS']) # Station-keeping Vy PID controller
         self.pid_sk_wz  = PIDController(config['SK_Wz_kP'], config['SK_Wz_kI'], config['SK_Wz_kD'], config['SK_Wz_kS']) # Station-keeping Wz PID controller
+        self.pid_sk_wz_close  = PIDController(config['SK_Wz_kP_close'], config['SK_Wz_kI_close'], config['SK_Wz_kD_close'], config['SK_Wz_kS']) # Station-keeping Wz PID controller
         self.goal_tol   = config['goal_tol'] # Goal tolerance dead-band of go-to-goal PID controller
         self.v_const    = config['v_const'] # Proportional gain for linear velocity outside goal tolerance
         self.v_limit    = config['v_limit'] # Saturation limit for linear velocity outside goal tolerance
@@ -325,7 +336,8 @@ class StationKeeping(Node):
     
 
     def station_keeping(self, msg):
-        # self.get_logger().info(f"Pose error: {msg.data}")
+
+        self.get_logger().info(f"Pose error: {msg.data}")
         self.config = self.config_callback()
 
         # Initialize lists to store thruster commands and angles
@@ -338,6 +350,12 @@ class StationKeeping(Node):
 
         err_rot = (normalize_angle((-1 * math.atan2(err_pos[1],err_pos[0])) - self.yaw))#This values fluctuates between very large and small values quickly
         err_rot = smoothen_val(err_rot)
+
+        self.get_logger().info(f"rot tol {err_rot}")
+        self.get_logger().info(f"pos tol {numpy.linalg.norm(err_pos)}")
+
+
+
         # self.get_logger().info(f" Error {err_rot}  ")
 
         # self.get_logger().info(f" angles {math.degrees(math.atan2(err_pos[1],err_pos[0]))}  ")
@@ -347,7 +365,7 @@ class StationKeeping(Node):
         
 
 
-        if msg.data > 0.5:  # Pose error is larger than a threshold
+        if msg.data > 3.0:  # Pose error is larger than a threshold
 
             if (abs(err_rot)>self.rot_tol):
                 # self.config = self.config_callback()
@@ -401,27 +419,64 @@ class StationKeeping(Node):
 
                 # angle_m = Float64()
                 # angle_m.data = angleval[0]
-                angle_l = Float64()
-                angle_l.data = angleval[1]
-                angle_r = Float64()
-                angle_r.data = angleval[2]
+                # angle_l = Float64()
+                # angle_l.data = angleval[1]
+                # angle_r = Float64()
+                # angle_r.data = angleval[2]
 
                 # Publish thruster commands and angles as needed
                 self.lateral_thrust_cmd_Pub.publish(thrust_m)
                 self.left_thrust_cmd_Pub.publish(thrust_l)
                 self.right_thrust_cmd_Pub.publish(thrust_r)
                 # self.lateral_thrust_angle_Pub.publish(angle_m)
-                self.left_thrust_angle_Pub.publish(angle_l)
-                self.right_thrust_angle_Pub.publish(angle_r)
+                # self.left_thrust_angle_Pub.publish(angle_l)
+                # self.right_thrust_angle_Pub.publish(angle_r)
 
-        else:
-            # Pose error is less than the threshold, stop thrusters
-            self.lateral_thrust_cmd_Pub.publish(0.0)
-            self.left_thrust_cmd_Pub.publish(0.0)
-            self.right_thrust_cmd_Pub.publish(0.0)
-            # self.lateral_thrust_angle_Pub.publish(0.0)
-            # self.left_thrust_angle_Pub.publish(0.0)
-            # self.right_thrust_angle_Pub.publish(0.0)
+
+        elif msg.data<=3:
+            if (abs(err_rot)>self.rot_tol_close):
+                # self.config = self.config_callback()
+
+                self.time = self.get_clock().now().nanoseconds # Current time
+                err_rot = (normalize_angle((-1 * math.atan2(err_pos[1],err_pos[0])) - self.yaw))#This values fluctuates between very large and small values quickly
+                err_rot = smoothen_val(err_rot)
+
+                W_z = self.pid_sk_wz_close.control(err_rot, self.time)  # PID controller for Wz
+                
+                thrustval[0] = 0
+                thrustval[1] = W_z
+                thrustval[2] = -W_z
+
+                self.get_logger().info(f"Turn err: {err_rot}  ")
+                self.get_logger().info(f"Turn Thrust: {thrustval}  ")
+
+                thrust_m = Float64()
+                thrust_m.data = numpy.float64(thrustval[0])
+                thrust_l = Float64()
+                thrust_l.data = numpy.float64(thrustval[1])
+                thrust_r = Float64()
+                thrust_r.data = numpy.float64(thrustval[2])
+
+                self.lateral_thrust_cmd_Pub.publish(thrust_m)
+                self.left_thrust_cmd_Pub.publish(thrust_l)
+                self.right_thrust_cmd_Pub.publish(thrust_r)
+
+
+        '''else :
+            thrustval[0] = 0
+            thrustval[1] = 0
+            thrustval[2] = 0
+
+            thrust_m = Float64()
+            thrust_m.data = numpy.float64(thrustval[0])
+            thrust_l = Float64()
+            thrust_l.data = numpy.float64(thrustval[1])
+            thrust_r = Float64()
+            thrust_r.data = numpy.float64(thrustval[2])
+
+            self.lateral_thrust_cmd_Pub.publish(thrust_m)
+            self.left_thrust_cmd_Pub.publish(thrust_l)
+            self.right_thrust_cmd_Pub.publish(thrust_r)'''
 
 
 
